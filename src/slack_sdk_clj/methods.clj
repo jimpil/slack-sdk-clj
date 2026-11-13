@@ -2,20 +2,31 @@
   (:require [clojure.reflect :as r]
             [clojure.java.data :as j]
             [clojure.java.data.builder :as jb]
+            [clojure.set :as set]
             [clojure.string :as str])
-  (:import [clojure.lang APersistentMap Reflector]
+  (:import [clojure.lang APersistentMap]
            [clojure.reflect Method]
            [com.slack.api RequestConfigurator]
            [com.slack.api.methods MethodsClient]
+           [com.slack.api.methods.request.chat ChatPostMessageRequest]
            [com.slack.api.methods.request.files FilesUploadV2Request FilesUploadV2Request$UploadFile]
+           [com.slack.api.model Attachment Message$Metadata]
+           [com.slack.api.model.block LayoutBlock]
+           [java.lang.reflect ParameterizedType]
            [okhttp3 FormBody$Builder MultipartBody$Builder]))
 
 (set! *warn-on-reflection* true)
 
+(defn- invoke-builder
+  [^Class c]
+  (-> c
+      (.getMethod "builder" (make-array Class 0))
+      (.invoke nil (object-array 0))))
+
 (defn- from-builder
   "Generic helper for any builder-based class."
   [^Class c props]
-  (let [builder (Reflector/invokeStaticMethod c "builder" (object-array 0))]
+  (let [builder (invoke-builder c)]
     (jb/to-java c builder props {})))
 
 (defn- map->obj
@@ -28,6 +39,13 @@
     (catch Exception _
       (from-builder t arg))))
 
+(defn- list-for
+  [k c props]
+  (if (contains? props k)
+    (->> (partial mapv (partial from-builder c))
+         (update props k))
+    props))
+
 ;; some Request classes contain fields that need further building
 ;; teach `clojure.java.data/to-java` how to do it
 
@@ -35,12 +53,24 @@
   [_ props]
   ;; the `filesUploadV2` is able to upload multiple files (via :uploadFiles),
   ;; but the param value is expected to be a list of `FilesUploadV2Request$UploadFile`
-  (if (contains? props :uploadFiles)
-    (->> (partial mapv (partial from-builder FilesUploadV2Request$UploadFile))
-         (update props :uploadFiles)
-         (from-builder FilesUploadV2Request))
-    props))
+  (->> props
+       (list-for :uploadFiles FilesUploadV2Request$UploadFile)
+       (from-builder FilesUploadV2Request)))
 
+(defmethod j/to-java [ChatPostMessageRequest APersistentMap]
+  [_ props]
+  ;; :attachments & :blocks are expected to be lists of Attachment & LayoutBlock respectively
+  ;; :metadata is expected to be of type Message$Metadata
+  (let [req (reduce-kv
+              (fn [props k v]
+                (list-for k v props))
+              props
+              {:attachments Attachment
+               :blocks      LayoutBlock})
+        req (cond-> req
+                    (contains? req :metadata)
+                    (update :metadata (partial from-builder Message$Metadata)))]
+    (from-builder ChatPostMessageRequest req)))
 ;; ----------
 ;; ----------
 
@@ -93,7 +123,51 @@
 
 (comment
   (def public-methods (api-methods))
+  (def request-classes
+    (->> public-methods
+         (mapcat :parameter-types)
+         (filter (comp #(str/ends-with? % "Request") name))
+         (into #{} (map resolve))))
 
-  (macroexpand-1 (gen1 (first public-methods)))
+  (defn builder-methods
+    [^Class c]
+    (try
+      (->> (invoke-builder c)
+           class
+           .getMethods
+           seq)
+      (catch Exception _ nil)))
+
+  (def class-name (memfn ^Class getName))
+
+  (import '[java.lang.reflect ParameterizedType])
+
+  (def requests-with-nested-builder
+    (->> request-classes
+         (filter
+           (fn [c]
+             (some
+               (fn [^java.lang.reflect.Method m]
+                 (let [g (first (.getGenericParameterTypes m))]
+                   (and (instance? ParameterizedType g)
+                        (some
+                          #(and (instance? Class %)
+                                (not (str/starts-with? (.getName ^Class %) "java.")))
+                          (.getActualTypeArguments ^ParameterizedType g)))))
+               (builder-methods c))))
+         (map class-name)
+         set))
+
+  ;; find all Request classes with nested types (requiring further building)
+  (->> (methods j/to-java)
+       keys
+       (remove #{:default})
+       (map (comp class-name first))
+       (filter #(str/starts-with? % "com.slack.api.methods.request"))
+       set
+       (set/difference requests-with-nested-builder))
+
+
+ (gen1 (first public-methods))
 
   )
