@@ -114,8 +114,6 @@
            seq)
       (catch Exception _ nil)))
 
-  (def class-name (memfn ^Class getName))
-
   (import '[java.lang.reflect ParameterizedType])
 
   (def requests-with-nested-builder
@@ -131,7 +129,7 @@
                                 (not (str/starts-with? (.getName ^Class %) "java.")))
                           (.getActualTypeArguments ^ParameterizedType g)))))
                (builder-methods c))))
-         (map class-name)
+         (map util/class-name)
          set))
 
   ;; find all Request classes with nested types (requiring further building)

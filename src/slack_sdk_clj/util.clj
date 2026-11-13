@@ -2,6 +2,8 @@
   (:require [clojure.java.data :as j]
             [clojure.java.data.builder :as jb]))
 
+(def class-name (memfn ^Class getName))
+
 (defn invoke-builder
   [^Class c]
   (-> c

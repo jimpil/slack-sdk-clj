@@ -2,7 +2,8 @@
   (:require [clojure.test :refer :all]
             [slack-sdk-clj.util :as util])
   (:import [com.slack.api.methods.request.chat
-            ChatPostMessageRequest]))
+            ChatPostMessageRequest]
+           [com.slack.api.methods.request.files FilesUploadV2Request]))
 
 (defmacro map->obj-assertion
   [c m]
@@ -27,5 +28,14 @@
        :metadata {:eventType "type1"
                   :eventPayload {"foo" 1
                                  "bar" :bar}}})
+    (map->obj-assertion
+      FilesUploadV2Request
+      {:uploadFiles [{:filename "..."
+                      :fileData (byte-array [1 2 3])
+                      ;:file (io/file "")
+                      }]
+       :channel "C1234567"
+       :snippetType "json"
+       :initialComment "the files you requested"})
     )
   )
