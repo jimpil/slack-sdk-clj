@@ -1,9 +1,10 @@
 (ns slack-sdk-clj.methods
   (:require [clojure.reflect :as r]
             [clojure.java.data :as j]
-            [clojure.java.data.builder :as jb]
             [clojure.set :as set]
-            [clojure.string :as str])
+            [clojure.string :as str]
+            [jsonista.core :as json]
+            [slack-sdk-clj.util :as util])
   (:import [clojure.lang APersistentMap]
            [clojure.reflect Method]
            [com.slack.api RequestConfigurator]
@@ -17,35 +18,6 @@
 
 (set! *warn-on-reflection* true)
 
-(defn- invoke-builder
-  [^Class c]
-  (-> c
-      (.getMethod "builder" (make-array Class 0))
-      (.invoke nil (object-array 0))))
-
-(defn- from-builder
-  "Generic helper for any builder-based class."
-  [^Class c props]
-  (let [builder (invoke-builder c)]
-    (jb/to-java c builder props {})))
-
-(defn- map->obj
-  "Single entry-point for converting maps to Java objects.
-   Tries the (extensible) `clojure.java.data /to-java`,
-   falling back to the Builder pattern which will succeed."
-  [t arg]
-  (try
-    (j/to-java t arg)
-    (catch Exception _
-      (from-builder t arg))))
-
-(defn- list-for
-  [k c props]
-  (if (contains? props k)
-    (->> (partial mapv (partial from-builder c))
-         (update props k))
-    props))
-
 ;; some Request classes contain fields that need further building
 ;; teach `clojure.java.data/to-java` how to do it
 
@@ -53,24 +25,28 @@
   [_ props]
   ;; the `filesUploadV2` is able to upload multiple files (via :uploadFiles),
   ;; but the param value is expected to be a list of `FilesUploadV2Request$UploadFile`
-  (->> props
-       (list-for :uploadFiles FilesUploadV2Request$UploadFile)
-       (from-builder FilesUploadV2Request)))
+  (if (contains? props :uploadFiles)
+    (->> (partial mapv (partial util/from-builder FilesUploadV2Request$UploadFile))
+         (update props :uploadFiles)
+         (util/from-builder FilesUploadV2Request))
+    props))
 
 (defmethod j/to-java [ChatPostMessageRequest APersistentMap]
   [_ props]
-  ;; :attachments & :blocks are expected to be lists of Attachment & LayoutBlock respectively
-  ;; :metadata is expected to be of type Message$Metadata
-  (let [req (reduce-kv
-              (fn [props k v]
-                (list-for k v props))
-              props
-              {:attachments Attachment
-               :blocks      LayoutBlock})
-        req (cond-> req
-                    (contains? req :metadata)
-                    (update :metadata (partial from-builder Message$Metadata)))]
-    (from-builder ChatPostMessageRequest req)))
+  ;; :metadata should be of type Message$Metadata (use Builder)
+  ;; :attachments should be a list of Attachment (use Builder)
+  ;; :blocks  is expected to be a list of LayoutBlock (an interface) - replace with :blocksAsString
+  (let [req (cond-> props
+                    (contains? props :metadata)
+                    (update :metadata (partial util/from-builder Message$Metadata))
+
+                    (contains? props :attachments)
+                    (update :attachments (partial mapv (partial util/from-builder Message$Metadata)))
+
+                    (contains? props :blocks)
+                    (-> (assoc :blocksAsString (json/write-value-as-string (:blocks props)))
+                        (dissoc :blocks)))]
+    (util/from-builder ChatPostMessageRequest req)))
 ;; ----------
 ;; ----------
 
@@ -110,7 +86,7 @@
               (fn [i# t#]
                 (let [arg# `(nth ~'args ~i#)]
                   (if (str/ends-with? (clojure.core/name t#) "Request") ;; SlackApiRequest
-                    (with-meta `(map->obj ~t# ~arg#) {:tag t#})
+                    (with-meta `(util/map->obj ~t# ~arg#) {:tag t#})
                    arg#))) ;; plain String probably
               parameter-types)))))
 
