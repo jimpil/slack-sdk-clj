@@ -1,5 +1,4 @@
 (ns slack-sdk-clj.socket
-  (:require [slack-sdk-clj.clients :as clients])
   (:import [com.slack.api.socket_mode SocketModeClient]
            [com.slack.api.socket_mode.listener EnvelopeListener WebSocketMessageListener]
            [com.slack.api.socket_mode.request SocketModeEnvelope]

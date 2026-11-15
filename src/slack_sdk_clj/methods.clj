@@ -9,14 +9,32 @@
            [clojure.reflect Method]
            [com.slack.api RequestConfigurator]
            [com.slack.api.methods MethodsClient]
-           [com.slack.api.methods.request.chat ChatPostMessageRequest]
+           [com.slack.api.methods.request.chat ChatPostEphemeralRequest ChatPostMessageRequest ChatScheduleMessageRequest ChatUnfurlRequest ChatUnfurlRequest$UnfurlDetail ChatUpdateRequest]
+           [com.slack.api.methods.request.conversations ConversationsListRequest]
            [com.slack.api.methods.request.files FilesUploadV2Request FilesUploadV2Request$UploadFile]
-           [com.slack.api.model Attachment Message$Metadata]
-           [com.slack.api.model.block LayoutBlock]
+           [com.slack.api.model Attachment ConversationType Message$Metadata]
            [java.lang.reflect ParameterizedType]
            [okhttp3 FormBody$Builder MultipartBody$Builder]))
 
 (set! *warn-on-reflection* true)
+
+(defn- with-json-str
+  [props k rk]
+  (-> props
+      (assoc rk (json/write-value-as-string (get props k)))
+      (dissoc k)))
+
+(defn- chat-req*
+  [props]
+  (cond-> props
+          (contains? props :metadata)
+          (with-json-str :metadata :metadataAsString)
+
+          (contains? props :attachments)
+          (with-json-str :attachments :attachmentsAsString)
+
+          (contains? props :blocks)
+          (with-json-str :blocks :blocksAsString)))
 
 ;; some Request classes contain fields that need further building
 ;; teach `clojure.java.data/to-java` how to do it
@@ -26,27 +44,49 @@
   ;; the `filesUploadV2` is able to upload multiple files (via :uploadFiles),
   ;; but the param value is expected to be a list of `FilesUploadV2Request$UploadFile`
   (if (contains? props :uploadFiles)
-    (->> (partial mapv (partial util/from-builder FilesUploadV2Request$UploadFile))
+    (->> (partial util/from-builder FilesUploadV2Request$UploadFile)
+         (partial mapv)
          (update props :uploadFiles)
          (util/from-builder FilesUploadV2Request))
     props))
 
 (defmethod j/to-java [ChatPostMessageRequest APersistentMap]
   [_ props]
-  ;; :metadata should be of type Message$Metadata (use Builder)
-  ;; :attachments should be a list of Attachment (use Builder)
-  ;; :blocks  is expected to be a list of LayoutBlock (an interface) - replace with :blocksAsString
-  (let [req (cond-> props
-                    (contains? props :metadata)
-                    (update :metadata (partial util/from-builder Message$Metadata))
-
-                    (contains? props :attachments)
-                    (update :attachments (partial mapv (partial util/from-builder Message$Metadata)))
-
-                    (contains? props :blocks)
-                    (-> (assoc :blocksAsString (json/write-value-as-string (:blocks props)))
-                        (dissoc :blocks)))]
+  (let [req (chat-req* props)]
     (util/from-builder ChatPostMessageRequest req)))
+
+(defmethod j/to-java [ChatUpdateRequest APersistentMap]
+  [_ props]
+  (let [req (chat-req* props)]
+    (util/from-builder ChatUpdateRequest req)))
+
+(defmethod j/to-java [ChatScheduleMessageRequest APersistentMap]
+  [_ props]
+  (let [req (chat-req* props)]
+    (util/from-builder ChatScheduleMessageRequest req)))
+
+(defmethod j/to-java [ChatPostEphemeralRequest APersistentMap]
+  [_ props]
+  (let [req (chat-req* props)]
+    (util/from-builder ChatPostEphemeralRequest req)))
+
+(defmethod j/to-java [ChatUnfurlRequest APersistentMap]
+  [_ props]
+  (let [req (cond-> props
+                    (contains? props :userAuthBlocks)
+                    (with-json-str :userAuthBlocks :rawUserAuthBlocks)
+
+                    (contains? props :unfurls)
+                    (with-json-str :unfurls :rawUnfurls))]
+    (util/from-builder ChatUnfurlRequest req)))
+
+(defmethod j/to-java [ConversationsListRequest APersistentMap]
+  [_ props]
+  (let [req (cond-> props
+                    (contains? props :types)
+                    (update :types (partial mapv (fn [t] (ConversationType/valueOf (str/upper-case t))))))]
+    (util/from-builder ConversationsListRequest req)))
+
 ;; ----------
 ;; ----------
 
@@ -108,7 +148,7 @@
   (defn builder-methods
     [^Class c]
     (try
-      (->> (invoke-builder c)
+      (->> (util/invoke-builder c)
            class
            .getMethods
            seq)
@@ -136,7 +176,7 @@
   (->> (methods j/to-java)
        keys
        (remove #{:default})
-       (map (comp class-name first))
+       (map (comp util/class-name first))
        (filter #(str/starts-with? % "com.slack.api.methods.request"))
        set
        (set/difference requests-with-nested-builder))
